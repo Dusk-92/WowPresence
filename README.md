@@ -11,23 +11,64 @@ Focused on a **small game-side footprint, stable character detection and native 
 - **World of Warcraft 1.12.1 (build 5875)** or a compatible client
 - **Discord Desktop**
 - A compatible DLL loader such as **VanillaFixes**
+- A free **Discord Application ID**
 
 The DLL only samples character information from the game. Discord communication is handled by a separate companion process.
 
 ## 📦 Installation
 
-1. Download **`WowPresence.dll`** and **`WowPresence.exe`** from Releases.
-2. Place both files in your WoW game directory.
-3. Add `WowPresence.dll` to your VanillaFixes `dlls.txt`.
-4. Launch WoW normally through VanillaFixes.
+1. Download **\`WowPresence.zip\`** from Releases.
+2. Extract the ZIP directly into your WoW game directory.
+3. Open:
 
-`WowPresence.exe` is started automatically by the DLL and normally does **not** need to be launched manually.
+\`\`\`text
+.modernization_tool\WowPresence\discord_application_id
+\`\`\`
 
-Runtime files are created automatically under:
+4. Replace the placeholder text with **your numeric Discord Application ID**.
+5. Add \`WowPresence.dll\` to your VanillaFixes \`dlls.txt\`.
+6. Launch WoW normally through VanillaFixes.
 
-```text
-<WoW folder>\.modernization_tool\WowPresence\
-```
+After extraction:
+
+\`\`\`text
+<WoW folder>\
+├─ WowPresence.dll
+├─ WowPresence.exe
+└─ .modernization_tool\
+   └─ WowPresence\
+      ├─ discord_application_id
+      └─ discord_broadcast_flags
+\`\`\`
+
+\`WowPresence.exe\` is started automatically by the DLL and normally does **not** need to be launched manually.
+
+## 🛰️ Discord Application ID
+
+WowPresence intentionally does **not** include a server-specific Discord Application ID.
+
+To create yours:
+
+1. Open the **Discord Developer Portal**: https://discord.com/developers/applications
+2. Create a **New Application**.
+3. Give it the name you want Discord to display.
+4. Open **General Information**.
+5. Copy the **Application ID**.
+6. Paste only that numeric ID into:
+
+\`\`\`text
+.modernization_tool\WowPresence\discord_application_id
+\`\`\`
+
+Example:
+
+\`\`\`text
+123456789012345678
+\`\`\`
+
+No Discord Client Secret, bot token, or bot account is used or required.
+
+If the file is missing or invalid, WowPresence leaves Rich Presence disabled and records the reason in \`WowPresence.log\`.
 
 ## ✨ Features
 
@@ -65,14 +106,14 @@ Other modified 1.12.1 clients should be considered **untested until verified**.
 
 ## ⚙️ How it works
 
-```text
+\`\`\`text
 WoW
  └─ WowPresence.dll
       ├─ read-only character sampling
       ├─ local JSON status
       └─ starts WowPresence.exe
              └─ Discord local IPC
-```
+\`\`\`
 
 The DLL does not communicate directly with Discord.
 
@@ -80,37 +121,25 @@ The companion executable does not read or write WoW memory.
 
 Character status is written to:
 
-```text
+\`\`\`text
 .modernization_tool\WowPresence\discord_wow_status.json
-```
+\`\`\`
 
 The companion log is written to:
 
-```text
+\`\`\`text
 .modernization_tool\WowPresence\WowPresence.log
-```
+\`\`\`
 
-## 🛰️ Discord application
-
-WowPresence currently includes the **OctoWoW Discord Application ID** as its built-in default.
-
-Advanced users can override it by creating:
-
-```text
-.modernization_tool\WowPresence\discord_application_id
-```
-
-The file must contain only the numeric Discord Application ID.
-
-No Discord Client Secret is used or required.
+These runtime files are created automatically.
 
 ## 🔒 Privacy flags
 
-The optional file:
+The included file:
 
-```text
+\`\`\`text
 .modernization_tool\WowPresence\discord_broadcast_flags
-```
+\`\`\`
 
 controls which character details are published to Discord.
 
@@ -124,7 +153,9 @@ controls which character details are published to Discord.
 | 32 | Zone |
 | 63 | All fields |
 
-If the file does not exist, all supported fields are enabled.
+The release package uses \`63\` by default.
+
+If the file is deleted, WowPresence also defaults to all supported fields.
 
 ## 🛡️ Administrator privileges
 
@@ -140,18 +171,20 @@ WowPresence targets **32-bit x86 Windows**, matching WoW 1.12.1.
 
 With an x86 MSVC developer environment:
 
-```bat
+\`\`\`bat
 cl /nologo /O2 /MT /W3 /LD src\WowPresence.c /Fe:WowPresence.dll /link /INCREMENTAL:NO
 cl /nologo /O2 /MT /W3 src\WowPresenceLauncher.c user32.lib /Fe:WowPresence.exe /link /SUBSYSTEM:WINDOWS /INCREMENTAL:NO
-```
+\`\`\`
 
 GitHub Actions builds:
 
-- `WowPresence.dll`
-- `WowPresence.exe`
-- `WowPresence.zip`
+- \`WowPresence.dll\`
+- \`WowPresence.exe\`
+- \`WowPresence.zip\`
 
-Tags matching `v*` can publish these files as a GitHub Release.
+The ZIP also includes the ready-to-edit configuration files.
+
+Tags matching \`v*\` can publish these files as a GitHub Release.
 
 ## 📜 Project identity & licensing
 
