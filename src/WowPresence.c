@@ -1,6 +1,6 @@
 /*
  * WowPresence.dll
- * Read-only WoW 1.12.1 (build 5875) status sampler for Modernization Tool.
+ * Read-only WoW 1.12.1 (build 5875) status sampler for WowPresence.
  *
  * Runtime contract:
  *   <game>\.modernization_tool\DiscordPresence\discord_wow_status.json
