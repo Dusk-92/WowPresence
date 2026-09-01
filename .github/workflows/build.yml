@@ -72,18 +72,18 @@ jobs:
             dist/WowPresence.zip
           if-no-files-found: error
 
-      - name: Create GitHub Release v1.0
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.head_commit.message == 'release v1.0' }}
+      - name: Create GitHub Release v1.1
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.head_commit.message == 'release v1.1' }}
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v1.0
+          tag_name: v1.1
           target_commitish: ${{ github.sha }}
           files: |
             dist/WowPresence.dll
             dist/WowPresence.exe
             dist/WowPresence.zip
           fail_on_unmatched_files: true
-          name: "WowPresence v1.0"
+          name: "WowPresence v1.1"
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
           make_latest: true
