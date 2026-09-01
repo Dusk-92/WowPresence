@@ -3,7 +3,7 @@
  * Invisible companion process for WowPresence.
  *
  * - is started automatically by WowPresence.dll after WoW is running
- * - reads .modernization_tool\DiscordPresence\discord_wow_status.json
+ * - reads WowPresence\discord_wow_status.json
  * - publishes Discord Rich Presence over the local Discord IPC named pipe
  * - exits when WoW_Modernized.exe exits
  */
