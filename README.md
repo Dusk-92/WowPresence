@@ -54,9 +54,16 @@ instead. No separate build is required.
 
 ## 🛰️ Discord Application ID
 
-WowPresence intentionally does **not** include a server-specific Discord Application ID.
+For **OctoWoW**, you can use the preconfigured Discord Application ID:
 
-To create yours:
+```text
+1544072796098011176
+```
+
+This is the same Application ID automatically configured by **Modernization Tool**.
+
+If you want to use your own Discord application instead:
+
 
 1. Open the **Discord Developer Portal**: https://discord.com/developers/applications
 2. Create a **New Application**.
