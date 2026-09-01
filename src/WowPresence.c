@@ -86,8 +86,25 @@ typedef struct MemoryView {
     uintptr_t module_base;
 } MemoryView;
 
+typedef enum PlayerReadResult {
+    PLAYER_READ_NOT_ATTEMPTED = 0,
+    PLAYER_READ_OK,
+    PLAYER_READ_NO_MANAGER,
+    PLAYER_READ_NO_GUID,
+    PLAYER_READ_NO_FIRST_OBJECT,
+    PLAYER_READ_LIST_CHANGED,
+    PLAYER_READ_OBJECT_READ_FAILED,
+    PLAYER_READ_BAD_DESCRIPTORS,
+    PLAYER_READ_BAD_PLAYER_DATA,
+    PLAYER_READ_CHAIN_BROKEN,
+    PLAYER_READ_NOT_FOUND
+} PlayerReadResult;
+
 typedef struct CharacterSnapshot {
     int in_world;
+    int raw_in_world;
+    int player_confirmed;
+    PlayerReadResult player_read_result;
     char name[NAME_LIMIT + 1];
     char zone[ZONE_LIMIT + 1];
     char guild[GUILD_LIMIT + 1];
@@ -531,15 +548,36 @@ static void read_player_guild(const MemoryView *view, uintptr_t player_object,
     }
 }
 
-static int read_local_player(const MemoryView *view, CharacterSnapshot *snapshot) {
+static const char *player_read_error(PlayerReadResult result) {
+    switch (result) {
+    case PLAYER_READ_OK: return "";
+    case PLAYER_READ_NO_MANAGER: return "object_manager";
+    case PLAYER_READ_NO_GUID: return "local_guid";
+    case PLAYER_READ_NO_FIRST_OBJECT: return "first_object";
+    case PLAYER_READ_LIST_CHANGED: return "object_list_changed";
+    case PLAYER_READ_OBJECT_READ_FAILED: return "object_read";
+    case PLAYER_READ_BAD_DESCRIPTORS: return "descriptors";
+    case PLAYER_READ_BAD_PLAYER_DATA: return "player_data";
+    case PLAYER_READ_CHAIN_BROKEN: return "object_chain";
+    case PLAYER_READ_NOT_FOUND: return "player_not_found";
+    case PLAYER_READ_NOT_ATTEMPTED:
+    default:
+        return "not_attempted";
+    }
+}
+
+static PlayerReadResult read_local_player(const MemoryView *view, CharacterSnapshot *snapshot) {
     uint32_t manager = 0, current = 0, initial_first = 0;
     uint64_t wanted_guid = 0;
     unsigned visited = 0u;
 
-    if (!view || !snapshot || !object_manager_pointer(view, &manager)) return 0;
-    if (!stable_local_guid(view, manager, &wanted_guid)) return 0;
+    if (!view || !snapshot || !object_manager_pointer(view, &manager))
+        return PLAYER_READ_NO_MANAGER;
+    if (!stable_local_guid(view, manager, &wanted_guid))
+        return PLAYER_READ_NO_GUID;
     if (!memory_u32(view, (uintptr_t)manager + OM_FIRST_OBJECT_OFF, &current) ||
-        !user_address((uintptr_t)current)) return 0;
+        !user_address((uintptr_t)current))
+        return PLAYER_READ_NO_FIRST_OBJECT;
     initial_first = current;
 
     while (user_address((uintptr_t)current) && !(current & 1u) && visited++ < MAX_OBJECT_VISITS) {
@@ -547,33 +585,45 @@ static int read_local_player(const MemoryView *view, CharacterSnapshot *snapshot
         uint64_t object_guid = 0;
 
         if (!memory_u32(view, (uintptr_t)manager + OM_FIRST_OBJECT_OFF, &current_first) ||
-            current_first != initial_first) return 0;
-        if (!memory_u32(view, (uintptr_t)current + OBJECT_TYPE_OFF, &object_type)) return 0;
+            current_first != initial_first)
+            return PLAYER_READ_LIST_CHANGED;
+        if (!memory_u32(view, (uintptr_t)current + OBJECT_TYPE_OFF, &object_type))
+            return PLAYER_READ_OBJECT_READ_FAILED;
 
         if (object_type == PLAYER_OBJECT_TYPE &&
             memory_u64(view, (uintptr_t)current + OBJECT_GUID_OFF, &object_guid) &&
-            object_guid == wanted_guid &&
-            memory_u32(view, (uintptr_t)current + OBJECT_DESCRIPTORS_OFF, &descriptors) &&
-            user_address((uintptr_t)descriptors)) {
+            object_guid == wanted_guid) {
             uint32_t level = 0, bytes0 = 0;
-            if (memory_u32(view, (uintptr_t)descriptors + UNIT_LEVEL_OFF, &level) &&
-                level >= 1u && level <= 80u) {
-                snapshot->level = level;
-            }
-            if (memory_u32(view, (uintptr_t)descriptors + UNIT_BYTES0_OFF, &bytes0)) {
+            int have_level, have_identity;
+
+            if (!memory_u32(view, (uintptr_t)current + OBJECT_DESCRIPTORS_OFF, &descriptors) ||
+                !user_address((uintptr_t)descriptors))
+                return PLAYER_READ_BAD_DESCRIPTORS;
+
+            have_level = memory_u32(view, (uintptr_t)descriptors + UNIT_LEVEL_OFF, &level) &&
+                         level >= 1u && level <= 80u;
+            have_identity = memory_u32(view, (uintptr_t)descriptors + UNIT_BYTES0_OFF, &bytes0);
+
+            if (have_level) snapshot->level = level;
+            if (have_identity) {
                 snapshot->race_id = bytes0 & 0xFFu;
                 snapshot->class_id = (bytes0 >> 8) & 0xFFu;
             }
+
             read_player_guild(view, (uintptr_t)current, descriptors,
                               snapshot->guild, sizeof(snapshot->guild));
-            return 1;
+
+            if (!have_level || !have_identity || !snapshot->race_id || !snapshot->class_id)
+                return PLAYER_READ_BAD_PLAYER_DATA;
+            return PLAYER_READ_OK;
         }
 
         if (!memory_u32(view, (uintptr_t)current + OBJECT_NEXT_OFF, &next) ||
-            next == current || !user_address((uintptr_t)next)) return 0;
+            next == current || !user_address((uintptr_t)next))
+            return PLAYER_READ_CHAIN_BROKEN;
         current = next;
     }
-    return 0;
+    return PLAYER_READ_NOT_FOUND;
 }
 
 static void collect_character_snapshot(CharacterSnapshot *snapshot) {
@@ -582,22 +632,40 @@ static void collect_character_snapshot(CharacterSnapshot *snapshot) {
     int have_name, have_zone;
     if (!snapshot) return;
     memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->player_read_result = PLAYER_READ_NOT_ATTEMPTED;
     memory_view_init(&view);
 
     have_name = first_text_match(&view, kPlayerNameLocations, snapshot->name,
                                  sizeof(snapshot->name), NAME_LIMIT, valid_player_name);
     have_zone = read_player_zone(&view, snapshot->zone, sizeof(snapshot->zone));
-    snapshot->in_world = client_is_in_world(&view) && have_name && have_zone;
+    snapshot->raw_in_world = client_is_in_world(&view);
 
-    now = GetTickCount();
-    if (!snapshot->in_world) {
+    /* Name + zone are used only as a candidate signal. The legacy in-world
+     * byte remains the primary signal, but a fully validated local-player
+     * object can confirm world state when that byte is unreliable on a
+     * compatible client. */
+    if (!have_name || !have_zone) {
         gWorldReadySince = 0;
         return;
     }
 
+    now = GetTickCount();
     if (!gWorldReadySince) gWorldReadySince = now ? now : 1u;
-    if ((DWORD)(now - gWorldReadySince) < WORLD_SETTLE_MS) return;
-    read_local_player(&view, snapshot);
+
+    /* Preserve the old behavior during the short settle window when the
+     * client flag is healthy. Clients with a bad flag remain hidden until
+     * the local-player object has been positively validated. */
+    if ((DWORD)(now - gWorldReadySince) < WORLD_SETTLE_MS) {
+        snapshot->in_world = snapshot->raw_in_world;
+        return;
+    }
+
+    snapshot->player_read_result = read_local_player(&view, snapshot);
+    snapshot->player_confirmed = snapshot->player_read_result == PLAYER_READ_OK;
+
+    /* A valid player object is a conservative fallback for clients where
+     * CLIENT_IN_WORLD_VA does not mirror the expected vanilla value. */
+    snapshot->in_world = snapshot->raw_in_world || snapshot->player_confirmed;
 }
 
 static int game_folder(char *output, size_t output_size) {
@@ -735,7 +803,8 @@ static int replace_text_file_atomically(const char *file_name, const char *conte
 static void publish_fault_snapshot(void) {
     replace_text_file_atomically(
         "discord_wow_status.json",
-        "{\"v\":1,\"ts\":0,\"ok\":false,\"in_world\":false,\"name\":\"\","
+        "{\"v\":1,\"ts\":0,\"ok\":false,\"in_world\":false,"
+        "\"raw_in_world\":false,\"player_confirmed\":false,\"name\":\"\","
         "\"zone\":\"\",\"level\":0,\"faction\":\"\",\"class\":\"\","
         "\"guild\":\"\",\"race\":\"\",\"build\":5875,\"err\":\"fault\"}");
 }
@@ -747,7 +816,7 @@ static void publish_character_snapshot(void) {
     char safe_zone[ZONE_LIMIT * 2u + 8u];
     char safe_guild[GUILD_LIMIT * 2u + 8u];
     char json[JSON_BUFFER_SIZE];
-    const char *race_text, *class_text, *faction_text;
+    const char *race_text, *class_text, *faction_text, *error_text = "";
 
     collect_character_snapshot(&snapshot);
     mask = load_share_mask();
@@ -761,15 +830,27 @@ static void publish_character_snapshot(void) {
     json_quote_text((mask & SHARE_ZONE) ? snapshot.zone : "", safe_zone, sizeof(safe_zone));
     json_quote_text((mask & SHARE_GUILD) ? snapshot.guild : "", safe_guild, sizeof(safe_guild));
 
+    if (!snapshot.in_world) {
+        if (!snapshot.name[0]) error_text = "name";
+        else if (!snapshot.zone[0]) error_text = "zone";
+        else if (snapshot.player_read_result == PLAYER_READ_NOT_ATTEMPTED)
+            error_text = snapshot.raw_in_world ? "settling" : "in_world_flag";
+        else
+            error_text = player_read_error(snapshot.player_read_result);
+    }
+
     _snprintf(
         json, sizeof(json),
         "{\"v\":1,\"ts\":%ld,\"ok\":%s,\"in_world\":%s,"
+        "\"raw_in_world\":%s,\"player_confirmed\":%s,"
         "\"name\":\"%s\",\"zone\":\"%s\",\"level\":%u,"
         "\"faction\":\"%s\",\"class\":\"%s\",\"guild\":\"%s\","
         "\"race\":\"%s\",\"build\":5875,\"err\":\"%s\"}",
         (long)time(NULL),
         snapshot.in_world ? "true" : "false",
         snapshot.in_world ? "true" : "false",
+        snapshot.raw_in_world ? "true" : "false",
+        snapshot.player_confirmed ? "true" : "false",
         safe_name,
         safe_zone,
         (snapshot.in_world && (mask & SHARE_LEVEL)) ? snapshot.level : 0u,
@@ -777,7 +858,7 @@ static void publish_character_snapshot(void) {
         class_text,
         safe_guild,
         race_text,
-        snapshot.in_world ? "" : "offsets");
+        error_text);
     json[sizeof(json) - 1] = 0;
     replace_text_file_atomically("discord_wow_status.json", json);
 }
