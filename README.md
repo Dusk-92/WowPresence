@@ -44,6 +44,14 @@ After extraction, the relevant files should look like this:
 
 The runtime JSON and log files are created automatically inside the same `WowPresence` folder.
 
+When WowPresence is installed through **Modernization Tool**, the same binaries automatically use:
+
+```text
+<WoW folder>\.modernization_tool\WowPresence\
+```
+
+instead. No separate build is required.
+
 ## 🛰️ Discord Application ID
 
 WowPresence intentionally does **not** include a server-specific Discord Application ID.
@@ -120,7 +128,9 @@ The DLL does not communicate directly with Discord.
 
 The companion executable does not read or write WoW memory.
 
-Runtime files are kept together in:
+Runtime files are kept together in one of these locations:
+
+**Standalone installation:**
 
 ```text
 <WoW folder>\WowPresence\
@@ -129,6 +139,18 @@ Runtime files are kept together in:
 ├─ discord_wow_status.json
 └─ WowPresence.log
 ```
+
+**Installed through Modernization Tool:**
+
+```text
+<WoW folder>\.modernization_tool\WowPresence\
+├─ discord_application_id
+├─ discord_broadcast_flags
+├─ discord_wow_status.json
+└─ WowPresence.log
+```
+
+If the Modernization Tool managed folder exists, WowPresence automatically prefers it. Otherwise it uses the standalone `WowPresence` folder.
 
 ## 🔒 Privacy flags
 
