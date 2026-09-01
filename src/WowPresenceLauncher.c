@@ -55,14 +55,10 @@ static int own_directory(char *out, size_t out_size) {
 }
 
 static int support_directory(char *out, size_t out_size) {
-    char root[MAX_PATH], first[MAX_PATH];
+    char root[MAX_PATH];
     if (!own_directory(root, sizeof(root))) return 0;
-    if (strlen(root) + strlen("\\.modernization_tool") + 1 >= sizeof(first)) return 0;
-    _snprintf(first, sizeof(first), "%s\\.modernization_tool", root);
-    first[sizeof(first) - 1] = 0;
-    CreateDirectoryA(first, NULL);
-    if (strlen(first) + strlen("\\WowPresence") + 1 >= out_size) return 0;
-    _snprintf(out, out_size, "%s\\WowPresence", first);
+    if (strlen(root) + strlen("\\WowPresence") + 1 >= out_size) return 0;
+    _snprintf(out, out_size, "%s\\WowPresence", root);
     out[out_size - 1] = 0;
     CreateDirectoryA(out, NULL);
     return 1;
@@ -144,7 +140,7 @@ static int load_application_id(char *out, size_t out_size) {
 
     if (!support_file(path, sizeof(path), "discord_application_id") ||
         !read_text_file(path, configured_id, sizeof(configured_id))) {
-        log_line("discord_application_id is missing. Add your Discord Application ID to .modernization_tool\\WowPresence\\discord_application_id.");
+        log_line("discord_application_id is missing. Add your Discord Application ID to WowPresence\\discord_application_id.");
         return 0;
     }
 
