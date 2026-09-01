@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: wowpresence-${{ github.workflow }}-${{ github.ref }}
+  group: wowpresence-\${{ github.workflow }}-\${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -44,16 +44,25 @@ jobs:
           if (-not (Test-Path "dist\WowPresence.dll")) { throw "WowPresence.dll missing" }
           if (-not (Test-Path "dist\WowPresence.exe")) { throw "WowPresence.exe missing" }
 
-      - name: Create ZIP package
+      - name: Create ready-to-install package
         shell: pwsh
         run: |
+          $package = "package"
+          $config = Join-Path $package ".modernization_tool\WowPresence"
+          New-Item -ItemType Directory -Force -Path $config | Out-Null
+
+          Copy-Item "dist\WowPresence.dll" (Join-Path $package "WowPresence.dll")
+          Copy-Item "dist\WowPresence.exe" (Join-Path $package "WowPresence.exe")
+          Copy-Item "config\discord_application_id" (Join-Path $config "discord_application_id")
+          Copy-Item "config\discord_broadcast_flags" (Join-Path $config "discord_broadcast_flags")
+
           $zip = "dist\WowPresence.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path "dist\WowPresence.dll","dist\WowPresence.exe" -DestinationPath $zip -CompressionLevel Optimal
+          Compress-Archive -Path (Join-Path $package "WowPresence.dll"),(Join-Path $package "WowPresence.exe"),(Join-Path $package ".modernization_tool") -DestinationPath $zip -CompressionLevel Optimal
           if (-not (Test-Path $zip)) { throw "WowPresence.zip missing" }
 
       - name: Upload build artifact
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        if: \${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v4
         with:
           name: WowPresence-build
@@ -64,7 +73,7 @@ jobs:
           if-no-files-found: error
 
       - name: Create GitHub Release
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        if: \${{ startsWith(github.ref, 'refs/tags/') }}
         uses: softprops/action-gh-release@v3
         with:
           files: |
@@ -72,6 +81,6 @@ jobs:
             dist/WowPresence.exe
             dist/WowPresence.zip
           fail_on_unmatched_files: true
-          name: "WowPresence ${{ github.ref_name }}"
+          name: "WowPresence \${{ github.ref_name }}"
           generate_release_notes: true
           make_latest: true
