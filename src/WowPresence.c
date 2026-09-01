@@ -26,6 +26,7 @@
 
 #define CLIENT_IMAGE_BASE          0x00400000u
 #define CLIENT_OBJECT_MANAGER_VA   0x00B41414u
+#define CLIENT_GET_OBJECT_BY_GUID_VA 0x00464870u
 #define CLIENT_IN_WORLD_VA         0x00B4B424u
 #define CLIENT_PLAYER_AREA_ID_VA   0x00B4E314u
 #define AREATABLE_RECORDS_VA       0x00C0E048u
@@ -108,6 +109,7 @@ typedef struct CharacterSnapshot {
     int raw_in_world;
     int player_confirmed;
     PlayerReadResult player_read_result;
+    uint32_t lookup_method;
     uint32_t first_object_offset;
     char name[NAME_LIMIT + 1];
     char zone[ZONE_LIMIT + 1];
@@ -626,6 +628,47 @@ static int resolve_first_object(const MemoryView *view, uint32_t manager,
     return 0;
 }
 
+static int lookup_object_by_guid_native(const MemoryView *view, uint64_t guid,
+                                        uint32_t *object) {
+    static const unsigned char signature[] = {
+        0x55u, 0x8Bu, 0xECu, 0x8Bu, 0x45u, 0x08u, 0x8Bu,
+        0x4Du, 0x0Cu, 0x8Bu, 0xD0u, 0x0Bu, 0xD1u
+    };
+    unsigned char actual[sizeof(signature)];
+    uintptr_t address;
+    uint32_t result = 0;
+    uint64_t returned_guid = 0;
+
+    if (!view || !object || !guid) return 0;
+    *object = 0;
+    address = client_address(view, CLIENT_GET_OBJECT_BY_GUID_VA);
+    if (!address || !memory_copy(view, address, actual, sizeof(actual)) ||
+        memcmp(actual, signature, sizeof(signature)) != 0) {
+        return 0;
+    }
+
+#ifdef _MSC_VER
+    __try {
+        typedef uint32_t (__stdcall *GetObjectByGuidFn)(uint64_t);
+        GetObjectByGuidFn get_object = (GetObjectByGuidFn)address;
+        result = get_object(guid);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+#else
+    return 0;
+#endif
+
+    if (!user_address((uintptr_t)result) ||
+        !memory_u64(view, (uintptr_t)result + OBJECT_GUID_OFF, &returned_guid) ||
+        returned_guid != guid) {
+        return 0;
+    }
+
+    *object = result;
+    return 1;
+}
+
 static int lookup_object_by_guid_hash(const MemoryView *view, uint32_t manager,
                                       uint64_t guid, uint32_t *object) {
     uint32_t table = 0, mask = 0, low, high, bucket_index;
@@ -750,18 +793,26 @@ static PlayerReadResult read_local_player(const MemoryView *view, CharacterSnaps
     if (!stable_local_guid(view, manager, &wanted_guid))
         return PLAYER_READ_NO_GUID;
 
-    /* Preferred path: use the same GUID hash table the 1.12.1 client uses
-     * internally. This does not depend on the visible-object list head at
-     * manager+0xAC and is therefore compatible with clients where that field
-     * is absent, relocated, or represented differently. */
-    if (lookup_object_by_guid_hash(view, manager, wanted_guid, &player_object)) {
+    /* Preferred path: call the client's own read-only GUID lookup wrapper.
+     * The wrapper signature is verified before use, its result is guarded by
+     * SEH, and the returned object's GUID is checked before any fields are
+     * consumed. This avoids depending on a particular object-list layout. */
+    if (lookup_object_by_guid_native(view, wanted_guid, &player_object)) {
+        snapshot->lookup_method = 1u;
         return read_player_object(view, player_object, snapshot);
     }
 
-    /* Compatibility fallback for clients where the GUID hash table is not
-     * available in the expected layout. */
+    /* First compatibility fallback: reproduce the vanilla GUID hash lookup
+     * without executing client code. */
+    if (lookup_object_by_guid_hash(view, manager, wanted_guid, &player_object)) {
+        snapshot->lookup_method = 2u;
+        return read_player_object(view, player_object, snapshot);
+    }
+
+    /* Final compatibility fallback: validated visible-object list lookup. */
     if (!resolve_first_object(view, manager, wanted_guid, &current, &first_offset))
         return PLAYER_READ_GUID_LOOKUP_FAILED;
+    snapshot->lookup_method = 3u;
     snapshot->first_object_offset = first_offset;
     initial_first = current;
 
@@ -967,7 +1018,7 @@ static void publish_fault_snapshot(void) {
     replace_text_file_atomically(
         "discord_wow_status.json",
         "{\"v\":1,\"ts\":0,\"ok\":false,\"in_world\":false,"
-        "\"raw_in_world\":false,\"player_confirmed\":false,\"first_object_offset\":0,"
+        "\"raw_in_world\":false,\"player_confirmed\":false,\"lookup_method\":0,\"first_object_offset\":0,"
         "\"name\":\"\",\"zone\":\"\",\"level\":0,\"faction\":\"\",\"class\":\"\","
         "\"guild\":\"\",\"race\":\"\",\"build\":5875,\"err\":\"fault\"}");
 }
@@ -1010,7 +1061,7 @@ static void publish_character_snapshot(void) {
     _snprintf(
         json, sizeof(json),
         "{\"v\":1,\"ts\":%ld,\"ok\":%s,\"in_world\":%s,"
-        "\"raw_in_world\":%s,\"player_confirmed\":%s,\"first_object_offset\":%u,"
+        "\"raw_in_world\":%s,\"player_confirmed\":%s,\"lookup_method\":%u,\"first_object_offset\":%u,"
         "\"name\":\"%s\",\"zone\":\"%s\",\"level\":%u,"
         "\"faction\":\"%s\",\"class\":\"%s\",\"guild\":\"%s\","
         "\"race\":\"%s\",\"build\":5875,\"err\":\"%s\"}",
@@ -1019,6 +1070,7 @@ static void publish_character_snapshot(void) {
         snapshot.in_world ? "true" : "false",
         snapshot.raw_in_world ? "true" : "false",
         snapshot.player_confirmed ? "true" : "false",
+        snapshot.lookup_method,
         snapshot.first_object_offset,
         safe_name,
         safe_zone,
