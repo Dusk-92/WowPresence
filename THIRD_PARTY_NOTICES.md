@@ -16,6 +16,15 @@ The current WowPresence implementation is maintained separately and has been ind
 
 At the historical IchaLaunch revision reviewed during development, no explicit LICENSE, LICENSE.md, or COPYING file was present. This notice therefore records provenance and credit; it should not be interpreted as granting rights on behalf of the IchaLaunch author.
 
+## ClassicAPI technical reference
+
+AreaTable and current-player-area client layout details were cross-checked against:
+
+- Project: ClassicAPI
+- Repository: https://github.com/brues-code/ClassicAPI
+
+ClassicAPI is used as a technical/reference source for documented WoW 1.12.1 client structures. WowPresence does not require, load, or call ClassicAPI.
+
 ## World of Warcraft client compatibility data
 
 WowPresence uses client-layout information and memory offsets associated with World of Warcraft 1.12.1 build 5875. Such compatibility information has been documented in multiple community projects over the years.
