@@ -1,6 +1,6 @@
 /*
  * WowPresence.exe
- * Invisible companion launcher for Modernization Tool.
+ * Invisible companion process for WowPresence.
  *
  * - is started automatically by WowPresence.dll after WoW is running
  * - reads .modernization_tool\DiscordPresence\discord_wow_status.json
@@ -21,7 +21,6 @@
 #define PIPE_COUNT 10
 #define IPC_OPCODE_HANDSHAKE 0u
 #define IPC_OPCODE_FRAME 1u
-#define DEFAULT_DISCORD_APPLICATION_ID "1544072796098011176"
 
 typedef struct {
     char name[32];
@@ -138,23 +137,25 @@ static int valid_application_id(const char *text) {
 
 static int load_application_id(char *out, size_t out_size) {
     char path[MAX_PATH];
-    char override_id[64] = {0};
+    char configured_id[64] = {0};
 
-    if (!out || out_size <= strlen(DEFAULT_DISCORD_APPLICATION_ID)) return 0;
-    lstrcpynA(out, DEFAULT_DISCORD_APPLICATION_ID, (int)out_size);
+    if (!out || out_size < 25u) return 0;
+    out[0] = 0;
 
-    /* Optional advanced override. Normal users never need this file. */
-    if (support_file(path, sizeof(path), "discord_application_id") &&
-        read_text_file(path, override_id, sizeof(override_id))) {
-        trim_ascii(override_id);
-        if (valid_application_id(override_id)) {
-            lstrcpynA(out, override_id, (int)out_size);
-        } else if (override_id[0]) {
-            log_line("Ignoring invalid discord_application_id override; using built-in OctoWoW ID.");
-        }
+    if (!support_file(path, sizeof(path), "discord_application_id") ||
+        !read_text_file(path, configured_id, sizeof(configured_id))) {
+        log_line("discord_application_id is missing. Add your Discord Application ID to .modernization_tool\\WowPresence\\discord_application_id.");
+        return 0;
     }
 
-    return valid_application_id(out);
+    trim_ascii(configured_id);
+    if (!valid_application_id(configured_id)) {
+        log_line("discord_application_id is invalid. Replace the file contents with your numeric Discord Application ID.");
+        return 0;
+    }
+
+    lstrcpynA(out, configured_id, (int)out_size);
+    return 1;
 }
 
 static DWORD parse_target_pid(const char *cmdline) {
@@ -442,7 +443,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmdline, int show) 
 
     have_id = load_application_id(application_id, sizeof(application_id));
     if (!have_id) {
-        log_line("Built-in Discord Application ID is invalid; presence is disabled.");
+        log_line("Discord Rich Presence is disabled until a valid discord_application_id is configured.");
     }
 
     /* Normal path: WowPresence.dll passes the exact WoW process id.
