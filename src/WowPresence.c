@@ -3,8 +3,8 @@
  * Read-only WoW 1.12.1 (build 5875) status sampler for WowPresence.
  *
  * Runtime contract:
- *   <game>\WowPresence\discord_wow_status.json
- *   <game>\WowPresence\discord_broadcast_flags
+ *   standalone: <game>\WowPresence\...
+ *   Modernization Tool: <game>\.modernization_tool\WowPresence\...
  *
  * Discord IPC is intentionally out of process. After the first sample, this
  * DLL starts WowPresence.exe from its worker thread and passes the exact
@@ -541,11 +541,34 @@ static int game_folder(char *output, size_t output_size) {
     return 1;
 }
 
+static int directory_exists(const char *path) {
+    DWORD attrs;
+    if (!path || !path[0]) return 0;
+    attrs = GetFileAttributesA(path);
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 static int support_folder(char *output, size_t output_size) {
-    char root[MAX_PATH];
+    char root[MAX_PATH], managed[MAX_PATH];
     int count;
     if (!game_folder(root, sizeof(root))) return 0;
 
+    /* Modernization Tool creates this directory before WoW starts. Prefer it
+     * when present so the same binaries can use the tool-managed location. */
+    count = _snprintf(
+        managed,
+        sizeof(managed),
+        "%s\\.modernization_tool\\WowPresence",
+        root
+    );
+    managed[sizeof(managed) - 1] = 0;
+    if (count >= 0 && (size_t)count < sizeof(managed) && directory_exists(managed)) {
+        if (strlen(managed) + 1u > output_size) return 0;
+        lstrcpynA(output, managed, (int)output_size);
+        return 1;
+    }
+
+    /* Standalone installs keep their data in <game>\\WowPresence. */
     count = _snprintf(output, output_size, "%s\\WowPresence", root);
     if (output_size) output[output_size - 1] = 0;
     if (count < 0 || (size_t)count >= output_size) return 0;
