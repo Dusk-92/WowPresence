@@ -3,7 +3,7 @@
  * Invisible companion process for WowPresence.
  *
  * - is started automatically by WowPresence.dll after WoW is running
- * - reads WowPresence\discord_wow_status.json
+ * - reads the standalone WowPresence folder or the Modernization Tool managed folder
  * - publishes Discord Rich Presence over the local Discord IPC named pipe
  * - exits when WoW_Modernized.exe exits
  */
@@ -54,9 +54,30 @@ static int own_directory(char *out, size_t out_size) {
     return 1;
 }
 
+static int directory_exists(const char *path) {
+    DWORD attrs;
+    if (!path || !path[0]) return 0;
+    attrs = GetFileAttributesA(path);
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
 static int support_directory(char *out, size_t out_size) {
-    char root[MAX_PATH];
+    char root[MAX_PATH], managed[MAX_PATH];
     if (!own_directory(root, sizeof(root))) return 0;
+
+    _snprintf(
+        managed,
+        sizeof(managed),
+        "%s\\.modernization_tool\\WowPresence",
+        root
+    );
+    managed[sizeof(managed) - 1] = 0;
+    if (directory_exists(managed)) {
+        if (strlen(managed) + 1 >= out_size) return 0;
+        lstrcpynA(out, managed, (int)out_size);
+        return 1;
+    }
+
     if (strlen(root) + strlen("\\WowPresence") + 1 >= out_size) return 0;
     _snprintf(out, out_size, "%s\\WowPresence", root);
     out[out_size - 1] = 0;
@@ -140,7 +161,7 @@ static int load_application_id(char *out, size_t out_size) {
 
     if (!support_file(path, sizeof(path), "discord_application_id") ||
         !read_text_file(path, configured_id, sizeof(configured_id))) {
-        log_line("discord_application_id is missing. Add your Discord Application ID to WowPresence\\discord_application_id.");
+        log_line("discord_application_id is missing. Add your Discord Application ID to the active WowPresence data folder.");
         return 0;
     }
 
