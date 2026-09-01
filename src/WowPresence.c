@@ -3,8 +3,8 @@
  * Read-only WoW 1.12.1 (build 5875) status sampler for WowPresence.
  *
  * Runtime contract:
- *   <game>\.modernization_tool\DiscordPresence\discord_wow_status.json
- *   <game>\.modernization_tool\DiscordPresence\discord_broadcast_flags
+ *   <game>\WowPresence\discord_wow_status.json
+ *   <game>\WowPresence\discord_broadcast_flags
  *
  * Discord IPC is intentionally out of process. After the first sample, this
  * DLL starts WowPresence.exe from its worker thread and passes the exact
