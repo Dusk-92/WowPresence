@@ -830,13 +830,18 @@ static void publish_character_snapshot(void) {
     json_quote_text((mask & SHARE_ZONE) ? snapshot.zone : "", safe_zone, sizeof(safe_zone));
     json_quote_text((mask & SHARE_GUILD) ? snapshot.guild : "", safe_guild, sizeof(safe_guild));
 
-    if (!snapshot.in_world) {
-        if (!snapshot.name[0]) error_text = "name";
-        else if (!snapshot.zone[0]) error_text = "zone";
-        else if (snapshot.player_read_result == PLAYER_READ_NOT_ATTEMPTED)
+    if (!snapshot.name[0]) {
+        error_text = "name";
+    } else if (!snapshot.zone[0]) {
+        error_text = "zone";
+    } else if (snapshot.player_read_result == PLAYER_READ_NOT_ATTEMPTED) {
+        if (!snapshot.in_world)
             error_text = snapshot.raw_in_world ? "settling" : "in_world_flag";
-        else
-            error_text = player_read_error(snapshot.player_read_result);
+    } else if (snapshot.player_read_result != PLAYER_READ_OK) {
+        /* Keep player-object diagnostics visible even when the legacy
+         * in-world flag is true. This makes partial snapshots diagnosable
+         * instead of reporting an empty error string. */
+        error_text = player_read_error(snapshot.player_read_result);
     }
 
     _snprintf(
