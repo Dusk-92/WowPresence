@@ -94,6 +94,7 @@ typedef enum PlayerReadResult {
     PLAYER_READ_NO_MANAGER,
     PLAYER_READ_NO_GUID,
     PLAYER_READ_NO_FIRST_OBJECT,
+    PLAYER_READ_GUID_LOOKUP_FAILED,
     PLAYER_READ_LIST_CHANGED,
     PLAYER_READ_OBJECT_READ_FAILED,
     PLAYER_READ_BAD_DESCRIPTORS,
@@ -625,12 +626,108 @@ static int resolve_first_object(const MemoryView *view, uint32_t manager,
     return 0;
 }
 
+static int lookup_object_by_guid_hash(const MemoryView *view, uint32_t manager,
+                                      uint64_t guid, uint32_t *object) {
+    uint32_t table = 0, mask = 0, low, high, bucket_index;
+    uintptr_t bucket;
+    uint32_t current = 0, link_offset = 0;
+    unsigned visited = 0u;
+
+    if (!view || !object || !user_address((uintptr_t)manager) || !guid) return 0;
+    *object = 0;
+
+    low = (uint32_t)(guid & 0xFFFFFFFFu);
+    high = (uint32_t)(guid >> 32);
+
+    if (!memory_u32(view, (uintptr_t)manager + 0x1Cu, &table) ||
+        !user_address((uintptr_t)table)) {
+        return 0;
+    }
+    if (!memory_u32(view, (uintptr_t)manager + 0x24u, &mask) ||
+        mask == 0xFFFFFFFFu) {
+        return 0;
+    }
+
+    bucket_index = low & mask;
+    bucket = (uintptr_t)table + (uintptr_t)bucket_index * 12u;
+    if (!readable_range(bucket, 12u) ||
+        !memory_u32(view, bucket, &link_offset) ||
+        !memory_u32(view, bucket + 8u, &current)) {
+        return 0;
+    }
+
+    while (user_address((uintptr_t)current) && !(current & 1u) &&
+           visited++ < MAX_OBJECT_VISITS) {
+        uint32_t hash_key = 0, object_low = 0, object_high = 0;
+        uint32_t next_slot = 0, next = 0;
+
+        if (!memory_u32(view, (uintptr_t)current + 0x18u, &hash_key) ||
+            !memory_u32(view, (uintptr_t)current + OBJECT_GUID_OFF, &object_low) ||
+            !memory_u32(view, (uintptr_t)current + OBJECT_GUID_OFF + 4u, &object_high)) {
+            return 0;
+        }
+
+        if (hash_key == low && object_low == low && object_high == high) {
+            *object = current;
+            return 1;
+        }
+
+        /* Mirror the client's 1.12.1 GUID hash-chain lookup at 0x464890:
+         * next = *(current + bucket.link_offset + 4). Keep the arithmetic
+         * 32-bit just like the client and validate before dereferencing. */
+        next_slot = current + link_offset + 4u;
+        if (!user_address((uintptr_t)next_slot) ||
+            !memory_u32(view, (uintptr_t)next_slot, &next) ||
+            next == current) {
+            return 0;
+        }
+        current = next;
+    }
+
+    return 0;
+}
+
+static PlayerReadResult read_player_object(const MemoryView *view, uint32_t player_object,
+                                           CharacterSnapshot *snapshot) {
+    uint32_t object_type = 0, descriptors = 0, level = 0, bytes0 = 0;
+    int have_level, have_identity;
+
+    if (!view || !snapshot || !user_address((uintptr_t)player_object))
+        return PLAYER_READ_OBJECT_READ_FAILED;
+    if (!memory_u32(view, (uintptr_t)player_object + OBJECT_TYPE_OFF, &object_type) ||
+        object_type != PLAYER_OBJECT_TYPE) {
+        return PLAYER_READ_OBJECT_READ_FAILED;
+    }
+    if (!memory_u32(view, (uintptr_t)player_object + OBJECT_DESCRIPTORS_OFF, &descriptors) ||
+        !user_address((uintptr_t)descriptors)) {
+        return PLAYER_READ_BAD_DESCRIPTORS;
+    }
+
+    have_level = memory_u32(view, (uintptr_t)descriptors + UNIT_LEVEL_OFF, &level) &&
+                 level >= 1u && level <= 80u;
+    have_identity = memory_u32(view, (uintptr_t)descriptors + UNIT_BYTES0_OFF, &bytes0);
+
+    if (have_level) snapshot->level = level;
+    if (have_identity) {
+        snapshot->race_id = bytes0 & 0xFFu;
+        snapshot->class_id = (bytes0 >> 8) & 0xFFu;
+    }
+
+    read_player_guild(view, (uintptr_t)player_object, descriptors,
+                      snapshot->guild, sizeof(snapshot->guild));
+
+    if (!have_level || !have_identity || !snapshot->race_id || !snapshot->class_id)
+        return PLAYER_READ_BAD_PLAYER_DATA;
+    return PLAYER_READ_OK;
+}
+
 static const char *player_read_error(PlayerReadResult result) {
     switch (result) {
     case PLAYER_READ_OK: return "";
     case PLAYER_READ_NO_MANAGER: return "object_manager";
     case PLAYER_READ_NO_GUID: return "local_guid";
     case PLAYER_READ_NO_FIRST_OBJECT: return "first_object";
+    case PLAYER_READ_GUID_LOOKUP_FAILED: return "guid_lookup";
     case PLAYER_READ_LIST_CHANGED: return "object_list_changed";
     case PLAYER_READ_OBJECT_READ_FAILED: return "object_read";
     case PLAYER_READ_BAD_DESCRIPTORS: return "descriptors";
@@ -644,7 +741,7 @@ static const char *player_read_error(PlayerReadResult result) {
 }
 
 static PlayerReadResult read_local_player(const MemoryView *view, CharacterSnapshot *snapshot) {
-    uint32_t manager = 0, current = 0, initial_first = 0, first_offset = 0;
+    uint32_t manager = 0, player_object = 0, current = 0, initial_first = 0, first_offset = 0;
     uint64_t wanted_guid = 0;
     unsigned visited = 0u;
 
@@ -652,13 +749,24 @@ static PlayerReadResult read_local_player(const MemoryView *view, CharacterSnaps
         return PLAYER_READ_NO_MANAGER;
     if (!stable_local_guid(view, manager, &wanted_guid))
         return PLAYER_READ_NO_GUID;
+
+    /* Preferred path: use the same GUID hash table the 1.12.1 client uses
+     * internally. This does not depend on the visible-object list head at
+     * manager+0xAC and is therefore compatible with clients where that field
+     * is absent, relocated, or represented differently. */
+    if (lookup_object_by_guid_hash(view, manager, wanted_guid, &player_object)) {
+        return read_player_object(view, player_object, snapshot);
+    }
+
+    /* Compatibility fallback for clients where the GUID hash table is not
+     * available in the expected layout. */
     if (!resolve_first_object(view, manager, wanted_guid, &current, &first_offset))
-        return PLAYER_READ_NO_FIRST_OBJECT;
+        return PLAYER_READ_GUID_LOOKUP_FAILED;
     snapshot->first_object_offset = first_offset;
     initial_first = current;
 
     while (user_address((uintptr_t)current) && !(current & 1u) && visited++ < MAX_OBJECT_VISITS) {
-        uint32_t current_first = 0, object_type = 0, descriptors = 0, next = 0;
+        uint32_t current_first = 0, object_type = 0, next = 0;
         uint64_t object_guid = 0;
 
         if (!memory_u32(view, (uintptr_t)manager + first_offset, &current_first) ||
@@ -670,29 +778,7 @@ static PlayerReadResult read_local_player(const MemoryView *view, CharacterSnaps
         if (object_type == PLAYER_OBJECT_TYPE &&
             memory_u64(view, (uintptr_t)current + OBJECT_GUID_OFF, &object_guid) &&
             object_guid == wanted_guid) {
-            uint32_t level = 0, bytes0 = 0;
-            int have_level, have_identity;
-
-            if (!memory_u32(view, (uintptr_t)current + OBJECT_DESCRIPTORS_OFF, &descriptors) ||
-                !user_address((uintptr_t)descriptors))
-                return PLAYER_READ_BAD_DESCRIPTORS;
-
-            have_level = memory_u32(view, (uintptr_t)descriptors + UNIT_LEVEL_OFF, &level) &&
-                         level >= 1u && level <= 80u;
-            have_identity = memory_u32(view, (uintptr_t)descriptors + UNIT_BYTES0_OFF, &bytes0);
-
-            if (have_level) snapshot->level = level;
-            if (have_identity) {
-                snapshot->race_id = bytes0 & 0xFFu;
-                snapshot->class_id = (bytes0 >> 8) & 0xFFu;
-            }
-
-            read_player_guild(view, (uintptr_t)current, descriptors,
-                              snapshot->guild, sizeof(snapshot->guild));
-
-            if (!have_level || !have_identity || !snapshot->race_id || !snapshot->class_id)
-                return PLAYER_READ_BAD_PLAYER_DATA;
-            return PLAYER_READ_OK;
+            return read_player_object(view, current, snapshot);
         }
 
         if (!memory_u32(view, (uintptr_t)current + OBJECT_NEXT_OFF, &next) ||
