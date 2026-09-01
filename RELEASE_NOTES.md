@@ -1,25 +1,19 @@
-# WowPresence v1.0
+# WowPresence v1.1
 
-First standalone release of WowPresence.
+## Changes
+
+- Added automatic support for Modernization Tool installations.
+- Standalone installs continue to use `WowPresence\` in the WoW folder.
+- When `.modernization_tool\WowPresence\` already exists, the same binaries automatically use that managed data directory instead.
+- No separate Modernization Tool build of WowPresence is required.
+- Existing `discord_application_id` and `discord_broadcast_flags` files remain user-managed.
 
 ## Included
 
-- WowPresence.dll
-- WowPresence.exe
-- WowPresence.zip ready-to-install package
+- `WowPresence.dll`
+- `WowPresence.exe`
+- `WowPresence.zip` ready-to-install standalone package
 
-## Highlights
-
-- Native Discord Rich Presence for WoW 1.12.1 build 5875 compatible clients
-- Character name, guild, level, class, race, faction and zone display
-- Stable elapsed-session timer across character changes
-- Read-only game-memory sampling
-- Separate native Discord IPC companion
-- Configurable Discord Application ID through `WowPresence\discord_application_id`
-- Privacy flags through `WowPresence\discord_broadcast_flags`
-- Standalone `WowPresence\` runtime folder
-- Automatic companion startup and exact WoW process tracking
-
-## Installation
+## Standalone installation
 
 Extract `WowPresence.zip` into the WoW folder, edit `WowPresence\discord_application_id`, add `WowPresence.dll` to VanillaFixes `dlls.txt`, then launch WoW normally.
