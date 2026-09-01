@@ -38,6 +38,7 @@
 #define AREATABLE_MAX_RECORDS      65535u
 
 #define OM_FIRST_OBJECT_OFF        0xACu
+#define OM_OBJECT_LINK_BASE_OFF    0xA4u
 #define OM_FIRST_OBJECT_SCAN_START 0x80u
 #define OM_FIRST_OBJECT_SCAN_END   0xE0u
 #define OM_LOCAL_GUID_OFF          0xC0u
@@ -89,6 +90,12 @@ typedef struct MemoryView {
     uintptr_t module_base;
 } MemoryView;
 
+typedef enum ClientLayout {
+    CLIENT_LAYOUT_UNKNOWN = 0,
+    CLIENT_LAYOUT_DIRECT_NEXT = 1,
+    CLIENT_LAYOUT_VANILLA_RELATIVE_NEXT = 2
+} ClientLayout;
+
 typedef enum PlayerReadResult {
     PLAYER_READ_NOT_ATTEMPTED = 0,
     PLAYER_READ_OK,
@@ -109,6 +116,7 @@ typedef struct CharacterSnapshot {
     int raw_in_world;
     int player_confirmed;
     PlayerReadResult player_read_result;
+    uint32_t layout_id;
     uint32_t lookup_method;
     uint32_t first_object_offset;
     char name[NAME_LIMIT + 1];
@@ -555,8 +563,61 @@ static void read_player_guild(const MemoryView *view, uintptr_t player_object,
     }
 }
 
-static int object_chain_contains_local_player(const MemoryView *view, uint32_t first,
-                                              uint64_t wanted_guid) {
+static ClientLayout detect_client_layout(const MemoryView *view) {
+    static const unsigned char vanilla_head_signature[] = {
+        0xA1u, 0x14u, 0x14u, 0xB4u, 0x00u, 0x53u,
+        0x8Bu, 0x98u, 0xACu, 0x00u, 0x00u, 0x00u
+    };
+    static const unsigned char vanilla_next_signature[] = {
+        0x8Bu, 0x0Du, 0x14u, 0x14u, 0xB4u, 0x00u,
+        0x8Bu, 0x81u, 0xA4u, 0x00u, 0x00u, 0x00u,
+        0x03u, 0xC3u, 0x8Bu, 0x58u, 0x04u
+    };
+    unsigned char actual_head[sizeof(vanilla_head_signature)];
+    unsigned char actual_next[sizeof(vanilla_next_signature)];
+    uintptr_t head = client_address(view, 0x00468380u);
+    uintptr_t next = client_address(view, 0x004683B9u);
+
+    if (head && next &&
+        memory_copy(view, head, actual_head, sizeof(actual_head)) &&
+        memory_copy(view, next, actual_next, sizeof(actual_next)) &&
+        memcmp(actual_head, vanilla_head_signature, sizeof(actual_head)) == 0 &&
+        memcmp(actual_next, vanilla_next_signature, sizeof(actual_next)) == 0) {
+        return CLIENT_LAYOUT_VANILLA_RELATIVE_NEXT;
+    }
+
+    /* Preserve the original WowPresence behavior for already-working
+     * customized clients. */
+    return CLIENT_LAYOUT_DIRECT_NEXT;
+}
+
+static int read_next_object(const MemoryView *view, uint32_t manager, uint32_t current,
+                            ClientLayout layout, uint32_t *next) {
+    uint32_t value = 0;
+    if (!view || !next || !user_address((uintptr_t)current)) return 0;
+
+    if (layout == CLIENT_LAYOUT_VANILLA_RELATIVE_NEXT) {
+        uint32_t link_base = 0;
+        uintptr_t slot;
+        if (!user_address((uintptr_t)manager) ||
+            !memory_u32(view, (uintptr_t)manager + OM_OBJECT_LINK_BASE_OFF, &link_base) ||
+            !user_address((uintptr_t)link_base)) {
+            return 0;
+        }
+        slot = (uintptr_t)link_base + (uintptr_t)current + 4u;
+        if (!user_address(slot) || !memory_u32(view, slot, &value)) return 0;
+    } else {
+        if (!memory_u32(view, (uintptr_t)current + OBJECT_NEXT_OFF, &value)) return 0;
+    }
+
+    if (value == current || !user_address((uintptr_t)value)) return 0;
+    *next = value;
+    return 1;
+}
+
+static int object_chain_contains_local_player(const MemoryView *view, uint32_t manager,
+                                              uint32_t first, uint64_t wanted_guid,
+                                              ClientLayout layout) {
     uint32_t current = first;
     unsigned visited = 0u;
 
@@ -573,8 +634,7 @@ static int object_chain_contains_local_player(const MemoryView *view, uint32_t f
             return 1;
         }
 
-        if (!memory_u32(view, (uintptr_t)current + OBJECT_NEXT_OFF, &next) ||
-            next == current || !user_address((uintptr_t)next)) {
+        if (!read_next_object(view, manager, current, layout, &next)) {
             return 0;
         }
         current = next;
@@ -583,8 +643,8 @@ static int object_chain_contains_local_player(const MemoryView *view, uint32_t f
 }
 
 static int resolve_first_object(const MemoryView *view, uint32_t manager,
-                                uint64_t wanted_guid, uint32_t *first,
-                                uint32_t *resolved_offset) {
+                                uint64_t wanted_guid, ClientLayout layout,
+                                uint32_t *first, uint32_t *resolved_offset) {
     uint32_t candidate = 0, offset;
 
     if (!view || !first || !resolved_offset || !user_address((uintptr_t)manager) ||
@@ -596,7 +656,7 @@ static int resolve_first_object(const MemoryView *view, uint32_t manager,
      * for the lifetime of this WoW process once one is discovered. */
     if (memory_u32(view, (uintptr_t)manager + gFirstObjectOffset, &candidate) &&
         user_address((uintptr_t)candidate) &&
-        object_chain_contains_local_player(view, candidate, wanted_guid)) {
+        object_chain_contains_local_player(view, manager, candidate, wanted_guid, layout)) {
         *first = candidate;
         *resolved_offset = gFirstObjectOffset;
         return 1;
@@ -616,7 +676,7 @@ static int resolve_first_object(const MemoryView *view, uint32_t manager,
             !user_address((uintptr_t)candidate)) {
             continue;
         }
-        if (!object_chain_contains_local_player(view, candidate, wanted_guid))
+        if (!object_chain_contains_local_player(view, manager, candidate, wanted_guid, layout))
             continue;
 
         gFirstObjectOffset = offset;
@@ -787,57 +847,63 @@ static PlayerReadResult read_local_player(const MemoryView *view, CharacterSnaps
     uint32_t manager = 0, player_object = 0, current = 0, initial_first = 0, first_offset = 0;
     uint64_t wanted_guid = 0;
     unsigned visited = 0u;
+    ClientLayout layout;
 
     if (!view || !snapshot || !object_manager_pointer(view, &manager))
         return PLAYER_READ_NO_MANAGER;
     if (!stable_local_guid(view, manager, &wanted_guid))
         return PLAYER_READ_NO_GUID;
 
-    /* Preferred path: call the client's own read-only GUID lookup wrapper.
-     * The wrapper signature is verified before use, its result is guarded by
-     * SEH, and the returned object's GUID is checked before any fields are
-     * consumed. This avoids depending on a particular object-list layout. */
+    layout = detect_client_layout(view);
+    snapshot->layout_id = (uint32_t)layout;
+
+    /* Primary path: walk the visible-object list using the link model detected
+     * from the running client. Stock 1.12.1/5875 uses manager+0xA4 as a
+     * relative link base, while already-supported customized clients keep the
+     * direct object+0x3C layout. */
+    if (resolve_first_object(view, manager, wanted_guid, layout, &current, &first_offset)) {
+        snapshot->lookup_method = 3u;
+        snapshot->first_object_offset = first_offset;
+        initial_first = current;
+
+        while (user_address((uintptr_t)current) && !(current & 1u) &&
+               visited++ < MAX_OBJECT_VISITS) {
+            uint32_t current_first = 0, object_type = 0, next = 0;
+            uint64_t object_guid = 0;
+
+            if (!memory_u32(view, (uintptr_t)manager + first_offset, &current_first) ||
+                current_first != initial_first)
+                return PLAYER_READ_LIST_CHANGED;
+            if (!memory_u32(view, (uintptr_t)current + OBJECT_TYPE_OFF, &object_type))
+                return PLAYER_READ_OBJECT_READ_FAILED;
+
+            if (object_type == PLAYER_OBJECT_TYPE &&
+                memory_u64(view, (uintptr_t)current + OBJECT_GUID_OFF, &object_guid) &&
+                object_guid == wanted_guid) {
+                return read_player_object(view, current, snapshot);
+            }
+
+            if (!read_next_object(view, manager, current, layout, &next))
+                return PLAYER_READ_CHAIN_BROKEN;
+            current = next;
+        }
+    }
+
+    /* Compatibility fallback: the client's own GUID lookup. Signature and
+     * returned GUID are validated before the object is consumed. */
     if (lookup_object_by_guid_native(view, wanted_guid, &player_object)) {
         snapshot->lookup_method = 1u;
         return read_player_object(view, player_object, snapshot);
     }
 
-    /* First compatibility fallback: reproduce the vanilla GUID hash lookup
-     * without executing client code. */
+    /* Last fallback: reproduce the GUID hash lookup without executing client
+     * code. */
     if (lookup_object_by_guid_hash(view, manager, wanted_guid, &player_object)) {
         snapshot->lookup_method = 2u;
         return read_player_object(view, player_object, snapshot);
     }
 
-    /* Final compatibility fallback: validated visible-object list lookup. */
-    if (!resolve_first_object(view, manager, wanted_guid, &current, &first_offset))
-        return PLAYER_READ_GUID_LOOKUP_FAILED;
-    snapshot->lookup_method = 3u;
-    snapshot->first_object_offset = first_offset;
-    initial_first = current;
-
-    while (user_address((uintptr_t)current) && !(current & 1u) && visited++ < MAX_OBJECT_VISITS) {
-        uint32_t current_first = 0, object_type = 0, next = 0;
-        uint64_t object_guid = 0;
-
-        if (!memory_u32(view, (uintptr_t)manager + first_offset, &current_first) ||
-            current_first != initial_first)
-            return PLAYER_READ_LIST_CHANGED;
-        if (!memory_u32(view, (uintptr_t)current + OBJECT_TYPE_OFF, &object_type))
-            return PLAYER_READ_OBJECT_READ_FAILED;
-
-        if (object_type == PLAYER_OBJECT_TYPE &&
-            memory_u64(view, (uintptr_t)current + OBJECT_GUID_OFF, &object_guid) &&
-            object_guid == wanted_guid) {
-            return read_player_object(view, current, snapshot);
-        }
-
-        if (!memory_u32(view, (uintptr_t)current + OBJECT_NEXT_OFF, &next) ||
-            next == current || !user_address((uintptr_t)next))
-            return PLAYER_READ_CHAIN_BROKEN;
-        current = next;
-    }
-    return PLAYER_READ_NOT_FOUND;
+    return PLAYER_READ_GUID_LOOKUP_FAILED;
 }
 
 static void collect_character_snapshot(CharacterSnapshot *snapshot) {
@@ -1018,7 +1084,7 @@ static void publish_fault_snapshot(void) {
     replace_text_file_atomically(
         "discord_wow_status.json",
         "{\"v\":1,\"ts\":0,\"ok\":false,\"in_world\":false,"
-        "\"raw_in_world\":false,\"player_confirmed\":false,\"lookup_method\":0,\"first_object_offset\":0,"
+        "\"raw_in_world\":false,\"player_confirmed\":false,\"layout_id\":0,\"lookup_method\":0,\"first_object_offset\":0,"
         "\"name\":\"\",\"zone\":\"\",\"level\":0,\"faction\":\"\",\"class\":\"\","
         "\"guild\":\"\",\"race\":\"\",\"build\":5875,\"err\":\"fault\"}");
 }
@@ -1061,7 +1127,7 @@ static void publish_character_snapshot(void) {
     _snprintf(
         json, sizeof(json),
         "{\"v\":1,\"ts\":%ld,\"ok\":%s,\"in_world\":%s,"
-        "\"raw_in_world\":%s,\"player_confirmed\":%s,\"lookup_method\":%u,\"first_object_offset\":%u,"
+        "\"raw_in_world\":%s,\"player_confirmed\":%s,\"layout_id\":%u,\"lookup_method\":%u,\"first_object_offset\":%u,"
         "\"name\":\"%s\",\"zone\":\"%s\",\"level\":%u,"
         "\"faction\":\"%s\",\"class\":\"%s\",\"guild\":\"%s\","
         "\"race\":\"%s\",\"build\":5875,\"err\":\"%s\"}",
@@ -1070,6 +1136,7 @@ static void publish_character_snapshot(void) {
         snapshot.in_world ? "true" : "false",
         snapshot.raw_in_world ? "true" : "false",
         snapshot.player_confirmed ? "true" : "false",
+        snapshot.layout_id,
         snapshot.lookup_method,
         snapshot.first_object_offset,
         safe_name,
