@@ -37,6 +37,8 @@
 #define AREATABLE_MAX_RECORDS      65535u
 
 #define OM_FIRST_OBJECT_OFF        0xACu
+#define OM_FIRST_OBJECT_SCAN_START 0x80u
+#define OM_FIRST_OBJECT_SCAN_END   0xE0u
 #define OM_LOCAL_GUID_OFF          0xC0u
 #define OBJECT_NEXT_OFF            0x3Cu
 #define OBJECT_TYPE_OFF            0x14u
@@ -105,6 +107,7 @@ typedef struct CharacterSnapshot {
     int raw_in_world;
     int player_confirmed;
     PlayerReadResult player_read_result;
+    uint32_t first_object_offset;
     char name[NAME_LIMIT + 1];
     char zone[ZONE_LIMIT + 1];
     char guild[GUILD_LIMIT + 1];
@@ -134,6 +137,7 @@ static const LabelEntry kRaceLabels[] = {
 static HANDLE gStopEvent = NULL;
 static HANDLE gWorkerThread = NULL;
 static DWORD gWorldReadySince = 0;
+static uint32_t gFirstObjectOffset = OM_FIRST_OBJECT_OFF;
 
 static int user_address(uintptr_t value) {
     return value >= (uintptr_t)USER_ADDRESS_MIN && value <= (uintptr_t)USER_ADDRESS_MAX;
@@ -548,6 +552,79 @@ static void read_player_guild(const MemoryView *view, uintptr_t player_object,
     }
 }
 
+static int object_chain_contains_local_player(const MemoryView *view, uint32_t first,
+                                              uint64_t wanted_guid) {
+    uint32_t current = first;
+    unsigned visited = 0u;
+
+    while (user_address((uintptr_t)current) && !(current & 1u) &&
+           visited++ < MAX_OBJECT_VISITS) {
+        uint32_t object_type = 0, next = 0;
+        uint64_t object_guid = 0;
+
+        if (!memory_u32(view, (uintptr_t)current + OBJECT_TYPE_OFF, &object_type))
+            return 0;
+        if (object_type == PLAYER_OBJECT_TYPE &&
+            memory_u64(view, (uintptr_t)current + OBJECT_GUID_OFF, &object_guid) &&
+            object_guid == wanted_guid) {
+            return 1;
+        }
+
+        if (!memory_u32(view, (uintptr_t)current + OBJECT_NEXT_OFF, &next) ||
+            next == current || !user_address((uintptr_t)next)) {
+            return 0;
+        }
+        current = next;
+    }
+    return 0;
+}
+
+static int resolve_first_object(const MemoryView *view, uint32_t manager,
+                                uint64_t wanted_guid, uint32_t *first,
+                                uint32_t *resolved_offset) {
+    uint32_t candidate = 0, offset;
+
+    if (!view || !first || !resolved_offset || !user_address((uintptr_t)manager) ||
+        !wanted_guid) {
+        return 0;
+    }
+
+    /* Keep the known 1.12.1 offset first, and remember a validated fallback
+     * for the lifetime of this WoW process once one is discovered. */
+    if (memory_u32(view, (uintptr_t)manager + gFirstObjectOffset, &candidate) &&
+        user_address((uintptr_t)candidate) &&
+        object_chain_contains_local_player(view, candidate, wanted_guid)) {
+        *first = candidate;
+        *resolved_offset = gFirstObjectOffset;
+        return 1;
+    }
+
+    /* Some compatible clients keep the same object manager/local GUID layout
+     * while moving the list-head field. Scan only the small aligned region
+     * around the vanilla field, and accept a candidate only when its chain
+     * actually contains the local player GUID. This prevents random pointers
+     * from being treated as object-list heads. */
+    for (offset = OM_FIRST_OBJECT_SCAN_START;
+         offset <= OM_FIRST_OBJECT_SCAN_END;
+         offset += sizeof(uint32_t)) {
+        if (offset == gFirstObjectOffset) continue;
+        candidate = 0;
+        if (!memory_u32(view, (uintptr_t)manager + offset, &candidate) ||
+            !user_address((uintptr_t)candidate)) {
+            continue;
+        }
+        if (!object_chain_contains_local_player(view, candidate, wanted_guid))
+            continue;
+
+        gFirstObjectOffset = offset;
+        *first = candidate;
+        *resolved_offset = offset;
+        return 1;
+    }
+
+    return 0;
+}
+
 static const char *player_read_error(PlayerReadResult result) {
     switch (result) {
     case PLAYER_READ_OK: return "";
@@ -567,7 +644,7 @@ static const char *player_read_error(PlayerReadResult result) {
 }
 
 static PlayerReadResult read_local_player(const MemoryView *view, CharacterSnapshot *snapshot) {
-    uint32_t manager = 0, current = 0, initial_first = 0;
+    uint32_t manager = 0, current = 0, initial_first = 0, first_offset = 0;
     uint64_t wanted_guid = 0;
     unsigned visited = 0u;
 
@@ -575,16 +652,16 @@ static PlayerReadResult read_local_player(const MemoryView *view, CharacterSnaps
         return PLAYER_READ_NO_MANAGER;
     if (!stable_local_guid(view, manager, &wanted_guid))
         return PLAYER_READ_NO_GUID;
-    if (!memory_u32(view, (uintptr_t)manager + OM_FIRST_OBJECT_OFF, &current) ||
-        !user_address((uintptr_t)current))
+    if (!resolve_first_object(view, manager, wanted_guid, &current, &first_offset))
         return PLAYER_READ_NO_FIRST_OBJECT;
+    snapshot->first_object_offset = first_offset;
     initial_first = current;
 
     while (user_address((uintptr_t)current) && !(current & 1u) && visited++ < MAX_OBJECT_VISITS) {
         uint32_t current_first = 0, object_type = 0, descriptors = 0, next = 0;
         uint64_t object_guid = 0;
 
-        if (!memory_u32(view, (uintptr_t)manager + OM_FIRST_OBJECT_OFF, &current_first) ||
+        if (!memory_u32(view, (uintptr_t)manager + first_offset, &current_first) ||
             current_first != initial_first)
             return PLAYER_READ_LIST_CHANGED;
         if (!memory_u32(view, (uintptr_t)current + OBJECT_TYPE_OFF, &object_type))
@@ -804,8 +881,8 @@ static void publish_fault_snapshot(void) {
     replace_text_file_atomically(
         "discord_wow_status.json",
         "{\"v\":1,\"ts\":0,\"ok\":false,\"in_world\":false,"
-        "\"raw_in_world\":false,\"player_confirmed\":false,\"name\":\"\","
-        "\"zone\":\"\",\"level\":0,\"faction\":\"\",\"class\":\"\","
+        "\"raw_in_world\":false,\"player_confirmed\":false,\"first_object_offset\":0,"
+        "\"name\":\"\",\"zone\":\"\",\"level\":0,\"faction\":\"\",\"class\":\"\","
         "\"guild\":\"\",\"race\":\"\",\"build\":5875,\"err\":\"fault\"}");
 }
 
@@ -847,7 +924,7 @@ static void publish_character_snapshot(void) {
     _snprintf(
         json, sizeof(json),
         "{\"v\":1,\"ts\":%ld,\"ok\":%s,\"in_world\":%s,"
-        "\"raw_in_world\":%s,\"player_confirmed\":%s,"
+        "\"raw_in_world\":%s,\"player_confirmed\":%s,\"first_object_offset\":%u,"
         "\"name\":\"%s\",\"zone\":\"%s\",\"level\":%u,"
         "\"faction\":\"%s\",\"class\":\"%s\",\"guild\":\"%s\","
         "\"race\":\"%s\",\"build\":5875,\"err\":\"%s\"}",
@@ -856,6 +933,7 @@ static void publish_character_snapshot(void) {
         snapshot.in_world ? "true" : "false",
         snapshot.raw_in_world ? "true" : "false",
         snapshot.player_confirmed ? "true" : "false",
+        snapshot.first_object_offset,
         safe_name,
         safe_zone,
         (snapshot.in_world && (mask & SHARE_LEVEL)) ? snapshot.level : 0u,
