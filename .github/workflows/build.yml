@@ -48,7 +48,7 @@ jobs:
         shell: pwsh
         run: |
           $package = "package"
-          $config = Join-Path $package ".modernization_tool\WowPresence"
+          $config = Join-Path $package "WowPresence"
           New-Item -ItemType Directory -Force -Path $config | Out-Null
 
           Copy-Item "dist\WowPresence.dll" (Join-Path $package "WowPresence.dll")
@@ -58,7 +58,7 @@ jobs:
 
           $zip = "dist\WowPresence.zip"
           if (Test-Path $zip) { Remove-Item $zip -Force }
-          Compress-Archive -Path (Join-Path $package "WowPresence.dll"),(Join-Path $package "WowPresence.exe"),(Join-Path $package ".modernization_tool") -DestinationPath $zip -CompressionLevel Optimal
+          Compress-Archive -Path (Join-Path $package "WowPresence.dll"),(Join-Path $package "WowPresence.exe"),(Join-Path $package "WowPresence") -DestinationPath $zip -CompressionLevel Optimal
           if (-not (Test-Path $zip)) { throw "WowPresence.zip missing" }
 
       - name: Upload build artifact
