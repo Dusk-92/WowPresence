@@ -84,7 +84,7 @@ If `discord_application_id` is missing or invalid, Rich Presence remains disable
 - Character name and guild display.
 - Level and class display.
 - Race and faction display.
-- Current zone display.
+- Current zone display resolved from the client AreaTable instead of heuristic text-address scanning.
 - Stable elapsed-session timer across character changes.
 - Automatic companion startup.
 - Exact WoW process tracking.
@@ -119,10 +119,13 @@ Other modified 1.12.1 clients should be considered **untested until verified**.
 WoW
  └─ WowPresence.dll
       ├─ read-only character sampling
+      ├─ Area ID → AreaTable zone resolution
       ├─ WowPresence\discord_wow_status.json
       └─ starts WowPresence.exe
              └─ Discord local IPC
 ```
+
+Zone names are resolved from the player's current AreaTable ID, matching the client's own zone data and avoiding internal map tokens such as `H32D` or `HLVA`.
 
 The DLL does not communicate directly with Discord.
 
