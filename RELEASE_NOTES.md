@@ -1,19 +1,16 @@
-# WowPresence v1.1
+# WowPresence v1.2
 
 ## Changes
 
-- Added automatic support for Modernization Tool installations.
-- Standalone installs continue to use `WowPresence\` in the WoW folder.
-- When `.modernization_tool\WowPresence\` already exists, the same binaries automatically use that managed data directory instead.
-- No separate Modernization Tool build of WowPresence is required.
-- Existing `discord_application_id` and `discord_broadcast_flags` files remain user-managed.
+- Reworked zone detection to use the player's real AreaTable ID.
+- Zone names are now resolved from `AreaTable.dbc` instead of selecting the first plausible string from several client addresses.
+- Prevents internal map/area tokens such as `H32D` and `HLVA` from being published as Discord zone names.
+- Uses the client's active localized AreaTable name when available, with a safe populated-locale fallback.
+- Keeps WowPresence fully standalone; ClassicAPI is not required.
+- Modernization Tool installations continue to use `.modernization_tool\WowPresence\` automatically.
 
 ## Included
 
 - `WowPresence.dll`
 - `WowPresence.exe`
 - `WowPresence.zip` ready-to-install standalone package
-
-## Standalone installation
-
-Extract `WowPresence.zip` into the WoW folder, edit `WowPresence\discord_application_id`, add `WowPresence.dll` to VanillaFixes `dlls.txt`, then launch WoW normally.
