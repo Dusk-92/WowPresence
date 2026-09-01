@@ -11,8 +11,10 @@
  * WoW process id. No process launch is performed from DllMain.
  *
  * This implementation is organized independently around a small memory-view
- * layer and a snapshot serializer. Client addresses are the community-known
- * WoW 1.12.1 / build 5875 values used for compatibility with the target client.
+ * layer and a snapshot serializer. Zone names are resolved from the player's
+ * current AreaTable ID instead of guessing among raw text addresses. Client
+ * addresses are community-documented WoW 1.12.1 / build 5875 compatibility
+ * values used by the target client.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -24,6 +26,16 @@
 
 #define CLIENT_IMAGE_BASE          0x00400000u
 #define CLIENT_OBJECT_MANAGER_VA   0x00B41414u
+#define CLIENT_IN_WORLD_VA         0x00B4B424u
+#define CLIENT_PLAYER_AREA_ID_VA   0x00B4E314u
+#define AREATABLE_RECORDS_VA       0x00C0E048u
+#define AREATABLE_COUNT_VA         0x00C0E04Cu
+#define LOCALE_INDEX_VA            0x00C0E080u
+#define AREATABLE_PARENT_ID_OFF    0x08u
+#define AREATABLE_NAMES_OFF        0x2Cu
+#define AREATABLE_LOCALE_SLOTS     9u
+#define AREATABLE_MAX_RECORDS      65535u
+
 #define OM_FIRST_OBJECT_OFF        0xACu
 #define OM_LOCAL_GUID_OFF          0xC0u
 #define OBJECT_NEXT_OFF            0x3Cu
@@ -67,11 +79,6 @@
 
 static const uintptr_t kPlayerNameLocations[] = {
     0x00C27FC8u, 0x00C27D88u, 0x00C27FD8u, 0
-};
-
-static const uintptr_t kZoneNameLocations[] = {
-    0x00B4B404u, 0x00B4B424u, 0x00CE06D0u,
-    0x00CE06F8u, 0x00B4B3C8u, 0
 };
 
 typedef struct MemoryView {
@@ -233,43 +240,112 @@ static int valid_display_text(const char *text, size_t max_length) {
     return 1;
 }
 
-static int looks_like_internal_zone_code(const char *text) {
-    size_t i, length;
-    int has_letter = 0;
-    int has_digit = 0;
-
-    if (!text) return 0;
-    length = strlen(text);
-
-    /* Some 1.12-compatible clients expose compact internal area tokens
-     * (for example "H32D") at one of the candidate zone addresses. These
-     * are identifiers, not user-facing zone names. Keep the rule narrow:
-     * short mixed letter/digit strings with no separators are rejected,
-     * while legitimate names such as "Area 52" remain valid. */
-    if (length < 2u || length > 8u) return 0;
-
-    for (i = 0u; i < length; ++i) {
-        char ch = text[i];
-        if (ascii_letter(ch)) {
-            has_letter = 1;
-        } else if (ch >= '0' && ch <= '9') {
-            has_digit = 1;
-        } else {
-            return 0;
-        }
-    }
-
-    return has_letter && has_digit;
-}
-
-static int valid_zone_name(const char *text) {
-    if (!valid_display_text(text, ZONE_LIMIT)) return 0;
-    return !looks_like_internal_zone_code(text);
-}
-
 static int valid_guild_name(const char *text) {
     if (!valid_display_text(text, GUILD_LIMIT)) return 0;
     return _stricmp(text, "none") != 0;
+}
+
+static int valid_area_name(const char *text) {
+    size_t i, length;
+    int has_letter = 0;
+    if (!text) return 0;
+    length = strlen(text);
+    if (length < 2u || length > ZONE_LIMIT) return 0;
+    for (i = 0u; i < length; ++i) {
+        if (ascii_letter(text[i])) has_letter = 1;
+    }
+    return has_letter;
+}
+
+static int client_u32(const MemoryView *view, uintptr_t vanilla_va, uint32_t *value) {
+    uintptr_t address = client_address(view, vanilla_va);
+    return address && memory_u32(view, address, value);
+}
+
+static int area_record(const MemoryView *view, uint32_t area_id, uint32_t *record) {
+    uint32_t count = 0, records = 0, candidate = 0;
+    uintptr_t slot;
+    if (!view || !record || !area_id) return 0;
+    if (!client_u32(view, AREATABLE_COUNT_VA, &count) ||
+        !count || count > AREATABLE_MAX_RECORDS || area_id > count) {
+        return 0;
+    }
+    if (!client_u32(view, AREATABLE_RECORDS_VA, &records) ||
+        !user_address((uintptr_t)records)) {
+        return 0;
+    }
+
+    slot = (uintptr_t)records + (uintptr_t)area_id * sizeof(uint32_t);
+    if (!memory_u32(view, slot, &candidate) ||
+        !user_address((uintptr_t)candidate)) {
+        return 0;
+    }
+
+    *record = candidate;
+    return 1;
+}
+
+static int area_name_from_record(const MemoryView *view, uint32_t record,
+                                 char *output, size_t output_size) {
+    uint32_t locale = 0;
+    unsigned pass;
+    if (!view || !user_address((uintptr_t)record) || !output || output_size < 2u)
+        return 0;
+    output[0] = 0;
+
+    if (!client_u32(view, LOCALE_INDEX_VA, &locale) ||
+        locale >= AREATABLE_LOCALE_SLOTS) {
+        locale = 0;
+    }
+
+    /* Try the active client locale first. If that string is unavailable or
+     * not representable by the current ASCII JSON path, fall back to another
+     * populated locale slot rather than publishing an internal map token. */
+    for (pass = 0u; pass < AREATABLE_LOCALE_SLOTS; ++pass) {
+        unsigned index = pass == 0u ? (unsigned)locale : pass - 1u;
+        uint32_t name_ptr = 0;
+        uintptr_t pointer_slot;
+
+        if (pass > 0u && index >= locale) ++index;
+        if (index >= AREATABLE_LOCALE_SLOTS) continue;
+
+        pointer_slot = (uintptr_t)record + AREATABLE_NAMES_OFF +
+                       (uintptr_t)index * sizeof(uint32_t);
+        if (!memory_u32(view, pointer_slot, &name_ptr) ||
+            !user_address((uintptr_t)name_ptr)) {
+            continue;
+        }
+        if (memory_ascii(view, (uintptr_t)name_ptr, output, output_size, ZONE_LIMIT) &&
+            valid_area_name(output)) {
+            return 1;
+        }
+        output[0] = 0;
+    }
+    return 0;
+}
+
+static int read_player_zone(const MemoryView *view, char *output, size_t output_size) {
+    uint32_t raw_area = 0, area_id, record = 0, parent_id = 0, parent_record = 0;
+    if (!view || !output || output_size < 2u) return 0;
+    output[0] = 0;
+
+    if (!client_u32(view, CLIENT_PLAYER_AREA_ID_VA, &raw_area)) return 0;
+    area_id = raw_area & 0xFFFFu;
+    if (!area_id || !area_record(view, area_id, &record)) return 0;
+
+    /* GetRealZoneText resolves sub-areas to their enclosing AreaTable zone.
+     * Mirror that behavior when a valid parent row is available. */
+    if (memory_u32(view, (uintptr_t)record + AREATABLE_PARENT_ID_OFF, &parent_id) &&
+        parent_id && area_record(view, parent_id, &parent_record)) {
+        record = parent_record;
+    }
+
+    return area_name_from_record(view, record, output, output_size);
+}
+
+static int client_is_in_world(const MemoryView *view) {
+    uint32_t value = 0;
+    return client_u32(view, CLIENT_IN_WORLD_VA, &value) && (value & 0xFFu) != 0u;
 }
 
 static int text_from_location(const MemoryView *view, uintptr_t vanilla_va,
@@ -510,9 +586,8 @@ static void collect_character_snapshot(CharacterSnapshot *snapshot) {
 
     have_name = first_text_match(&view, kPlayerNameLocations, snapshot->name,
                                  sizeof(snapshot->name), NAME_LIMIT, valid_player_name);
-    have_zone = first_text_match(&view, kZoneNameLocations, snapshot->zone,
-                                 sizeof(snapshot->zone), ZONE_LIMIT, valid_zone_name);
-    snapshot->in_world = have_name && have_zone;
+    have_zone = read_player_zone(&view, snapshot->zone, sizeof(snapshot->zone));
+    snapshot->in_world = client_is_in_world(&view) && have_name && have_zone;
 
     now = GetTickCount();
     if (!snapshot->in_world) {
