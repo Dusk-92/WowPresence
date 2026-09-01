@@ -542,15 +542,11 @@ static int game_folder(char *output, size_t output_size) {
 }
 
 static int support_folder(char *output, size_t output_size) {
-    char root[MAX_PATH], parent[MAX_PATH];
+    char root[MAX_PATH];
     int count;
     if (!game_folder(root, sizeof(root))) return 0;
-    count = _snprintf(parent, sizeof(parent), "%s\\.modernization_tool", root);
-    parent[sizeof(parent) - 1] = 0;
-    if (count < 0 || (size_t)count >= sizeof(parent)) return 0;
-    CreateDirectoryA(parent, NULL);
 
-    count = _snprintf(output, output_size, "%s\\WowPresence", parent);
+    count = _snprintf(output, output_size, "%s\\WowPresence", root);
     if (output_size) output[output_size - 1] = 0;
     if (count < 0 || (size_t)count >= output_size) return 0;
     CreateDirectoryA(output, NULL);
