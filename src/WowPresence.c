@@ -88,6 +88,10 @@ typedef struct MemoryView {
 
 typedef struct CharacterSnapshot {
     int in_world;
+    int current_player_ok;
+    int refreshed_player_ok;
+    int manager_changed;
+    int used_refreshed_reader;
     char name[NAME_LIMIT + 1];
     char zone[ZONE_LIMIT + 1];
     char guild[GUILD_LIMIT + 1];
@@ -531,7 +535,14 @@ static void read_player_guild(const MemoryView *view, uintptr_t player_object,
     }
 }
 
-static int read_local_player(const MemoryView *view, CharacterSnapshot *snapshot) {
+static int snapshot_has_player_data(const CharacterSnapshot *snapshot) {
+    return snapshot && snapshot->level >= 1u && snapshot->level <= 80u &&
+           snapshot->race_id != 0u && snapshot->class_id != 0u;
+}
+
+/* Current WowPresence reader: capture one manager pointer, then reuse it for
+ * local GUID validation and the full object-list walk. */
+static int read_local_player_current(const MemoryView *view, CharacterSnapshot *snapshot) {
     uint32_t manager = 0, current = 0, initial_first = 0;
     uint64_t wanted_guid = 0;
     unsigned visited = 0u;
@@ -547,6 +558,72 @@ static int read_local_player(const MemoryView *view, CharacterSnapshot *snapshot
         uint64_t object_guid = 0;
 
         if (!memory_u32(view, (uintptr_t)manager + OM_FIRST_OBJECT_OFF, &current_first) ||
+            current_first != initial_first) return 0;
+        if (!memory_u32(view, (uintptr_t)current + OBJECT_TYPE_OFF, &object_type)) return 0;
+
+        if (object_type == PLAYER_OBJECT_TYPE &&
+            memory_u64(view, (uintptr_t)current + OBJECT_GUID_OFF, &object_guid) &&
+            object_guid == wanted_guid &&
+            memory_u32(view, (uintptr_t)current + OBJECT_DESCRIPTORS_OFF, &descriptors) &&
+            user_address((uintptr_t)descriptors)) {
+            uint32_t level = 0, bytes0 = 0;
+            if (memory_u32(view, (uintptr_t)descriptors + UNIT_LEVEL_OFF, &level) &&
+                level >= 1u && level <= 80u) {
+                snapshot->level = level;
+            }
+            if (memory_u32(view, (uintptr_t)descriptors + UNIT_BYTES0_OFF, &bytes0)) {
+                snapshot->race_id = bytes0 & 0xFFu;
+                snapshot->class_id = (bytes0 >> 8) & 0xFFu;
+            }
+            read_player_guild(view, (uintptr_t)current, descriptors,
+                              snapshot->guild, sizeof(snapshot->guild));
+            return 1;
+        }
+
+        if (!memory_u32(view, (uintptr_t)current + OBJECT_NEXT_OFF, &next) ||
+            next == current || !user_address((uintptr_t)next)) return 0;
+        current = next;
+    }
+    return 0;
+}
+
+/* Test reader: mirror IchaLaunch's manager-refresh behavior exactly enough to
+ * isolate pointer churn. Each local-GUID read reacquires *0xB41414, then the
+ * object-list walk reacquires it once more before traversal. */
+static int read_local_player_refreshed(const MemoryView *view, CharacterSnapshot *snapshot,
+                                       int *manager_changed) {
+    uint32_t manager_a = 0, manager_b = 0, manager_walk = 0;
+    uint32_t current = 0, initial_first = 0;
+    uint64_t guid_a = 0, guid_b = 0, wanted_guid = 0;
+    unsigned visited = 0u;
+
+    if (manager_changed) *manager_changed = 0;
+    if (!view || !snapshot) return 0;
+
+    if (!object_manager_pointer(view, &manager_a) ||
+        !memory_u64(view, (uintptr_t)manager_a + OM_LOCAL_GUID_OFF, &guid_a) ||
+        !guid_a) return 0;
+
+    if (!object_manager_pointer(view, &manager_b) ||
+        !memory_u64(view, (uintptr_t)manager_b + OM_LOCAL_GUID_OFF, &guid_b) ||
+        !guid_b) return 0;
+
+    if (manager_changed && manager_a != manager_b) *manager_changed = 1;
+    if (guid_a != guid_b) return 0;
+    wanted_guid = guid_a;
+
+    if (!object_manager_pointer(view, &manager_walk)) return 0;
+    if (manager_changed && manager_walk != manager_b) *manager_changed = 1;
+
+    if (!memory_u32(view, (uintptr_t)manager_walk + OM_FIRST_OBJECT_OFF, &current) ||
+        !user_address((uintptr_t)current)) return 0;
+    initial_first = current;
+
+    while (user_address((uintptr_t)current) && !(current & 1u) && visited++ < MAX_OBJECT_VISITS) {
+        uint32_t current_first = 0, object_type = 0, descriptors = 0, next = 0;
+        uint64_t object_guid = 0;
+
+        if (!memory_u32(view, (uintptr_t)manager_walk + OM_FIRST_OBJECT_OFF, &current_first) ||
             current_first != initial_first) return 0;
         if (!memory_u32(view, (uintptr_t)current + OBJECT_TYPE_OFF, &object_type)) return 0;
 
@@ -597,7 +674,30 @@ static void collect_character_snapshot(CharacterSnapshot *snapshot) {
 
     if (!gWorldReadySince) gWorldReadySince = now ? now : 1u;
     if ((DWORD)(now - gWorldReadySince) < WORLD_SETTLE_MS) return;
-    read_local_player(&view, snapshot);
+
+    {
+        CharacterSnapshot refreshed;
+        int current_read = 0, refreshed_read = 0, changed = 0;
+
+        current_read = read_local_player_current(&view, snapshot);
+        snapshot->current_player_ok = current_read && snapshot_has_player_data(snapshot);
+
+        memset(&refreshed, 0, sizeof(refreshed));
+        refreshed_read = read_local_player_refreshed(&view, &refreshed, &changed);
+        snapshot->refreshed_player_ok = refreshed_read && snapshot_has_player_data(&refreshed);
+        snapshot->manager_changed = changed;
+
+        /* Test fallback only: if the current reader misses valid player data
+         * but the refreshed-manager reader succeeds, publish the recovered
+         * fields so Discord itself becomes an immediate A/B signal. */
+        if (!snapshot->current_player_ok && snapshot->refreshed_player_ok) {
+            snapshot->level = refreshed.level;
+            snapshot->race_id = refreshed.race_id;
+            snapshot->class_id = refreshed.class_id;
+            lstrcpynA(snapshot->guild, refreshed.guild, sizeof(snapshot->guild));
+            snapshot->used_refreshed_reader = 1;
+        }
+    }
 }
 
 static int game_folder(char *output, size_t output_size) {
@@ -766,7 +866,9 @@ static void publish_character_snapshot(void) {
         "{\"v\":1,\"ts\":%ld,\"ok\":%s,\"in_world\":%s,"
         "\"name\":\"%s\",\"zone\":\"%s\",\"level\":%u,"
         "\"faction\":\"%s\",\"class\":\"%s\",\"guild\":\"%s\","
-        "\"race\":\"%s\",\"build\":5875,\"err\":\"%s\"}",
+        "\"race\":\"%s\",\"build\":5875,"
+        "\"current_player\":%s,\"refreshed_player\":%s,"
+        "\"manager_changed\":%s,\"reader\":\"%s\",\"err\":\"%s\"}",
         (long)time(NULL),
         snapshot.in_world ? "true" : "false",
         snapshot.in_world ? "true" : "false",
@@ -777,6 +879,11 @@ static void publish_character_snapshot(void) {
         class_text,
         safe_guild,
         race_text,
+        snapshot.current_player_ok ? "true" : "false",
+        snapshot.refreshed_player_ok ? "true" : "false",
+        snapshot.manager_changed ? "true" : "false",
+        snapshot.used_refreshed_reader ? "refreshed" :
+            (snapshot.current_player_ok ? "current" : "none"),
         snapshot.in_world ? "" : "offsets");
     json[sizeof(json) - 1] = 0;
     replace_text_file_atomically("discord_wow_status.json", json);
