@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - test/discord-detail-flags
     tags:
       - 'v*'
   pull_request:
@@ -71,6 +72,22 @@ jobs:
             dist/WowPresence.exe
             dist/WowPresence.zip
           if-no-files-found: error
+
+      - name: Publish Discord details test prerelease
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/test/discord-detail-flags' }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: test-discord-details
+          target_commitish: ${{ github.sha }}
+          files: |
+            dist/WowPresence.zip
+          fail_on_unmatched_files: true
+          name: "WowPresence Discord Details Test"
+          body: |
+            Test-only WowPresence build for Modernization Tool Discord detail controls.
+            Not intended for stable/manual installation.
+          prerelease: true
+          make_latest: false
 
       - name: Create GitHub Release v1.2
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.head_commit.message == 'release v1.2' }}
