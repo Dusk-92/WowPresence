@@ -293,7 +293,9 @@ static int load_status(Status *status) {
     json_string(json, "class", status->class_name, sizeof(status->class_name));
     json_string(json, "race", status->race, sizeof(status->race));
     json_int(json, "level", &status->level);
-    return status->name[0] || status->zone[0] || status->level > 0;
+    return status->name[0] || status->zone[0] || status->level > 0 ||
+           status->guild[0] || status->faction[0] || status->class_name[0] ||
+           status->race[0];
 }
 
 static int rpc_read_packet(HANDLE pipe, char *payload, size_t payload_size) {
