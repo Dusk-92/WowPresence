@@ -44,7 +44,7 @@ After extraction, the relevant files should look like this:
 
 The runtime JSON and log files are created automatically inside the same `WowPresence` folder.
 
-When WowPresence is installed through **Modernization Tool**, the same binaries automatically use:
+When WowPresence is installed through the **[Modernization Tool](https://github.com/Dusk-92/Modernization-Tool)**, the same binaries automatically use:
 
 ```text
 <WoW folder>\.modernization_tool\WowPresence\
