@@ -79,8 +79,6 @@ jobs:
           tag_name: v1.2
           target_commitish: ${{ github.sha }}
           files: |
-            dist/WowPresence.dll
-            dist/WowPresence.exe
             dist/WowPresence.zip
           fail_on_unmatched_files: true
           name: "WowPresence v1.2"
@@ -93,8 +91,6 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            dist/WowPresence.dll
-            dist/WowPresence.exe
             dist/WowPresence.zip
           fail_on_unmatched_files: true
           name: "WowPresence ${{ github.ref_name }}"
