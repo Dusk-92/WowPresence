@@ -162,29 +162,75 @@ Runtime files are kept together in one of these locations:
 
 If the Modernization Tool managed folder exists, WowPresence automatically prefers it. Otherwise it uses the standalone `WowPresence` folder.
 
-## 🔒 Privacy flags
+## 🔒 Discord Rich Presence privacy
 
-The included file:
+WowPresence lets you choose exactly which character details are shown on Discord.
+
+For a standalone installation, edit:
 
 ```text
 WowPresence\discord_broadcast_flags
 ```
 
-controls which character details are published to Discord.
+When WowPresence is installed through **Modernization Tool**, the equivalent file is stored in:
+
+```text
+.modernization_tool\WowPresence\discord_broadcast_flags
+```
+
+Modernization Tool provides checkboxes for these options, so manual bitmask editing is normally only needed for standalone WowPresence installations.
+
+### Available fields
+
+Each field has its own value:
 
 | Value | Field |
 | ---: | --- |
-| 1 | Name |
+| 1 | Character Name |
 | 2 | Guild |
 | 4 | Faction |
 | 8 | Class |
 | 16 | Level |
 | 32 | Zone |
-| 63 | All fields |
+| 64 | Race |
 
-The release package uses `63` by default.
+To display multiple fields, **add their values together** and put the result in `discord_broadcast_flags`.
 
-If the file is deleted, WowPresence also defaults to all supported fields.
+### Examples
+
+| Display | Value |
+| --- | ---: |
+| Nothing | 0 |
+| Character Name only | 1 |
+| Faction + Class | 12 |
+| Race only | 64 |
+| Race + Faction + Class | 76 |
+| Character Name + Level + Zone | 49 |
+| All character details | 127 |
+
+Example — to display **Race + Faction + Class**:
+
+```text
+Race     = 64
+Faction  = 4
+Class    = 8
+
+64 + 4 + 8 = 76
+```
+
+Then set:
+
+```text
+76
+```
+
+inside `discord_broadcast_flags`.
+
+The default configuration uses `127`, which enables all supported character details.
+
+WowPresence reads this setting while the game is running, so changes should normally appear on Discord automatically within a few seconds.
+
+If the file is missing or contains an invalid value, WowPresence falls back to all supported fields.
 
 ## 🛡️ Administrator privileges
 
