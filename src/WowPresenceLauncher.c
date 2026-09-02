@@ -404,9 +404,26 @@ static void format_activity(const Status *s, char *out, size_t out_size, long lo
         lstrcpynA(details, extra, sizeof(details));
     }
 
-    _snprintf(out, out_size,
-              "{\"details\":\"%s\",\"state\":\"%s\",\"timestamps\":{\"start\":%lld}}",
-              details, s->zone, session_start);
+    /* Discord rejects empty string values for Rich Presence text fields.
+     * Omit a field entirely when the user did not choose anything that maps
+     * to it, so Race/Class/Faction/Guild-only and Zone-only combinations work. */
+    if (details[0] && s->zone[0]) {
+        _snprintf(out, out_size,
+                  "{\"details\":\"%s\",\"state\":\"%s\",\"timestamps\":{\"start\":%lld}}",
+                  details, s->zone, session_start);
+    } else if (details[0]) {
+        _snprintf(out, out_size,
+                  "{\"details\":\"%s\",\"timestamps\":{\"start\":%lld}}",
+                  details, session_start);
+    } else if (s->zone[0]) {
+        _snprintf(out, out_size,
+                  "{\"state\":\"%s\",\"timestamps\":{\"start\":%lld}}",
+                  s->zone, session_start);
+    } else {
+        _snprintf(out, out_size,
+                  "{\"timestamps\":{\"start\":%lld}}",
+                  session_start);
+    }
     out[out_size - 1] = 0;
 }
 
