@@ -54,7 +54,7 @@ instead. No separate build is required.
 
 ## 🛰️ Discord Application ID
 
-If you want to use your own Discord application:
+To configure your own Discord Application ID:
 
 
 1. Open the **Discord Developer Portal**: https://discord.com/developers/applications
