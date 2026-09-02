@@ -5,7 +5,7 @@
  * - is started automatically by WowPresence.dll after WoW is running
  * - reads the standalone WowPresence folder or the Modernization Tool managed folder
  * - publishes Discord Rich Presence over the local Discord IPC named pipe
- * - exits when WoW_Modernized.exe exits
+ * - exits when the target WoW process exits
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -470,10 +470,11 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmdline, int show) 
 
     while (!pid && wait_loops++ < 25) {
         pid = find_process("WoW_Modernized.exe");
+        if (!pid) pid = find_process("WoW.exe");
         if (!pid) Sleep(200);
     }
     if (!pid) {
-        log_line("No running WoW_Modernized.exe found; WowPresence exiting.");
+        log_line("No running WoW process found; WowPresence exiting.");
         return 0;
     }
 
@@ -483,7 +484,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE prev, LPSTR cmdline, int show) 
         return 0;
     }
 
-    log_line("WoW_Modernized.exe detected.");
+    log_line("WoW process detected.");
     /* Fixed for the lifetime of this WoW process. Text updates, character
      * changes and loading states reuse the same Discord elapsed-time origin. */
     session_start = (long long)time(NULL);
