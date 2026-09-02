@@ -213,7 +213,7 @@ GitHub Actions builds:
 
 The ZIP includes the ready-to-edit `WowPresence` configuration folder.
 
-Tags matching `v*` can publish these files as a GitHub Release.
+Tags matching `v*` publish `WowPresence.zip` as the GitHub Release asset.
 
 ## 📜 Project identity & licensing
 
