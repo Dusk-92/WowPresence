@@ -75,7 +75,8 @@
 #define SHARE_CLASS                8u
 #define SHARE_LEVEL                16u
 #define SHARE_ZONE                 32u
-#define SHARE_ALL                  63u
+#define SHARE_RACE                 64u
+#define SHARE_ALL                  127u
 
 static const uintptr_t kPlayerNameLocations[] = {
     0x00C27FC8u, 0x00C27D88u, 0x00C27FD8u, 0
@@ -751,7 +752,8 @@ static void publish_character_snapshot(void) {
 
     collect_character_snapshot(&snapshot);
     mask = load_share_mask();
-    race_text = snapshot.in_world ? label_for_id(kRaceLabels, snapshot.race_id) : "";
+    race_text = (snapshot.in_world && (mask & SHARE_RACE))
+        ? label_for_id(kRaceLabels, snapshot.race_id) : "";
     class_text = (snapshot.in_world && (mask & SHARE_CLASS))
         ? label_for_id(kClassLabels, snapshot.class_id) : "";
     faction_text = (snapshot.in_world && (mask & SHARE_FACTION))
